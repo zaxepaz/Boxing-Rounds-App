@@ -1,4 +1,3 @@
-import * as Speech from 'expo-speech';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Modal, Pressable, ScrollView, StatusBar, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,8 +7,22 @@ import { Pause, Play, RefreshCw, Settings, SkipForward } from 'lucide-react-nati
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
-const COMBOS = [
+const speak = (text: string, options?: { rate?: number; onDone?: () => void }) => {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.rate = options?.rate ?? 1.0;
+  utterance.onend = () => options?.onDone?.();
+  utterance.onerror = () => options?.onDone?.();
+  window.speechSynthesis.speak(utterance);
+};
 
+const unlockSpeech = () => {
+  const utterance = new SpeechSynthesisUtterance('');
+  window.speechSynthesis.speak(utterance);
+};
+
+const COMBOS = [
   "Jab, Cross", 
   "Jab, Jab, Cross", 
   "1, 2, 3, 2", 
@@ -61,37 +74,47 @@ export default function HomeScreen() {
 
   // refs 
   const secondsRef = useRef(120);
+  const isRestingRef = useRef(false);
   const isSpeakingRef = useRef(false);
-  const lastComboTimeRef = useRef(120);
+  const lastComboTimeRef = useRef(120 + 2.5); // offset so first combo triggers quickly
+  const speakingTimeoutRef = useRef<any>(null);
   const COMBO_GAP = 2.5;
 
   useEffect(() => {
     secondsRef.current = seconds;
   }, [seconds]);
 
+  useEffect(() => {
+    isRestingRef.current = isResting;
+  }, [isResting]);
+
   // logic for phase switching + round progression
   const handlePhaseSwitch = useCallback(() => {
-    if (!isResting) {
-      Speech.speak("Rest", { rate: 1.0 });
+    if (!isRestingRef.current) {
+      speak("Rest", { rate: 1.0 });
       setIsResting(true);
+      isRestingRef.current = true;
       setSeconds(15);
+      secondsRef.current = 15;
       setCurrentCombo("BREATHE");
     } else {
       if (round < totalRounds) {
         const nextRound = round + 1;
         setRound(nextRound);
         setIsResting(false);
+        isRestingRef.current = false;
         setSeconds(120);
-        lastComboTimeRef.current = 120;
-        Speech.speak(`Round ${nextRound}`, { rate: 1.0 });
+        secondsRef.current = 120;
+        lastComboTimeRef.current = 120 + COMBO_GAP;
+        speak(`Round ${nextRound}`, { rate: 1.0 });
         setCurrentCombo("WORK!");
       } else {
         setIsActive(false);
-        Speech.speak("Workout complete", { rate: 1.0 });
+        speak("Workout complete", { rate: 1.0 });
         setCurrentCombo("FINISHED");
       }
     }
-  }, [isResting, round, totalRounds]);
+  }, [round, totalRounds]);
 
   // timer
   useEffect(() => {
@@ -99,18 +122,18 @@ export default function HomeScreen() {
 
     if (isActive) {
       interval = window.setInterval(() => {
-          if (secondsRef.current > 0) {
-            setSeconds((prev) => prev - 1);
-          } else {
-            handlePhaseSwitch();
-            return;
-          }
+        if (secondsRef.current > 0) {
+          setSeconds((prev) => prev - 1);
+        } else {
+          handlePhaseSwitch();
+          return;
+        }
 
         const timeSinceLastComboFinish = lastComboTimeRef.current - secondsRef.current;
 
         if (
-          !isResting && 
-          !isSpeakingRef.current && 
+          !isRestingRef.current &&
+          !isSpeakingRef.current &&
           timeSinceLastComboFinish >= COMBO_GAP &&
           secondsRef.current > 5
         ) {
@@ -122,19 +145,24 @@ export default function HomeScreen() {
     return () => {
       if (interval) clearInterval(interval);
     };
-  }, [isActive, isResting, handlePhaseSwitch]);
+  }, [isActive, handlePhaseSwitch]);
 
   const triggerCombo = () => {
     const randomCombo = COMBOS[Math.floor(Math.random() * COMBOS.length)];
     setCurrentCombo(randomCombo);
     isSpeakingRef.current = true;
-    Speech.speak(randomCombo, {
+
+    // Failsafe: force-unlock after 6 seconds in case onDone never fires
+    if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
+    speakingTimeoutRef.current = setTimeout(() => {
+      isSpeakingRef.current = false;
+      lastComboTimeRef.current = secondsRef.current;
+    }, 6000);
+
+    speak(randomCombo, {
       rate: 1.4,
       onDone: () => {
-        isSpeakingRef.current = false;
-        lastComboTimeRef.current = secondsRef.current;
-      },
-      onError: () => {
+        clearTimeout(speakingTimeoutRef.current);
         isSpeakingRef.current = false;
         lastComboTimeRef.current = secondsRef.current;
       }
@@ -144,12 +172,15 @@ export default function HomeScreen() {
   const resetTimer = () => {
     setIsActive(false);
     setIsResting(false);
+    isRestingRef.current = false;
     setRound(1);
     setSeconds(120);
     secondsRef.current = 120;
-    lastComboTimeRef.current = 120;
+    lastComboTimeRef.current = 120 + COMBO_GAP;
+    isSpeakingRef.current = false;
+    if (speakingTimeoutRef.current) clearTimeout(speakingTimeoutRef.current);
     setCurrentCombo("READY TO BOX?");
-    Speech.stop();
+    window.speechSynthesis?.cancel();
   };
 
   return (
@@ -170,9 +201,7 @@ export default function HomeScreen() {
             ROUND {round} OF {totalRounds}
           </ThemedText>
           <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.cogButton}>
-            <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.cogButton}>
-              <Settings size={28} color="#FF6700" />
-            </TouchableOpacity>
+            <Settings size={28} color="#FF6700" />
           </TouchableOpacity>
         </View>
 
@@ -207,6 +236,7 @@ export default function HomeScreen() {
                       const s = Number(val) || 1;
                       setSeconds(s);
                       secondsRef.current = s;
+                      lastComboTimeRef.current = s + COMBO_GAP;
                     }}
                   />
                 </View>
@@ -242,18 +272,21 @@ export default function HomeScreen() {
 
           <View style={styles.controlsContainer}>
             <TouchableOpacity
-                onPress={() => setIsActive(!isActive)}
+                onPress={() => {
+                  if (!isActive) unlockSpeech(); 
+                  setIsActive(!isActive);
+                }}
                 style={styles.mainButton}
               >
-                {isActive ? (
-                  <Pause size={32} color="#351000" fill="#351000" />
-                ) : (
-                  <Play size={32} color="#351000" fill="#351000" />
-                )}
-                <ThemedText style={styles.mainButtonText}>
-                  {isActive ? "PAUSE" : "START"}
-                </ThemedText>
-              </TouchableOpacity>
+              {isActive ? (
+                <Pause size={32} color="#351000" fill="#351000" />
+              ) : (
+                <Play size={32} color="#351000" fill="#351000" />
+              )}
+              <ThemedText style={styles.mainButtonText}>
+                {isActive ? "PAUSE" : "START"}
+              </ThemedText>
+            </TouchableOpacity>
 
             <View style={styles.secondaryButtonsRow}>
               <TouchableOpacity onPress={resetTimer} style={styles.sideButton}>
@@ -471,6 +504,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   cogPlaceholder: {
-  width: 38, 
-},
+    width: 38, 
+  },
 });
